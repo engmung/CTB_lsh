@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+ccxt
+pandas
+numpy
+pandas-ta
+google-genai
+python-dotenv
+requests
+python-dateutil
+pydantic
+structlog
+notion-client
+schedule

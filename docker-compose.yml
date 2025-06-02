@@ -1,0 +1,80 @@
+version: "3.8"
+
+services:
+  sol-trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sol-trading-bot
+    restart: unless-stopped
+
+    # 포트 매핑
+    ports:
+      - "8000:8000"
+
+    # 환경 변수 파일
+    env_file:
+      - .env
+
+    # 볼륨 마운트 (데이터 영속성)
+    volumes:
+      - sol_bot_data:/app/data
+      - sol_bot_logs:/app/logs
+
+    # 네트워크
+    networks:
+      - sol-bot-network
+
+    # 헬스체크
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    # 로그 설정
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 의존성 (필요시 데이터베이스나 다른 서비스 추가)
+    depends_on: []
+
+# 네트워크 정의
+networks:
+  sol-bot-network:
+    driver: bridge
+
+# 볼륨 정의
+volumes:
+  sol_bot_data:
+    driver: local
+  sol_bot_logs:
+    driver: local
+# =================================
+# 사용법:
+# =================================
+#
+# 1. 환경 변수 설정:
+#    cp .env.example .env
+#    # .env 파일에 API 키들 입력
+#
+# 2. 빌드 및 실행:
+#    docker-compose up -d --build
+#
+# 3. 로그 확인:
+#    docker-compose logs -f sol-trading-bot
+#
+# 4. API 테스트:
+#    curl http://localhost:8000/status
+#
+# 5. 중지:
+#    docker-compose down
+#
+# 6. 데이터 초기화:
+#    docker-compose down -v
+#
+# =================================

@@ -980,39 +980,6 @@ async def startup_event():
         historical_thread = threading.Thread(target=background_historical_collection, daemon=True)
         historical_thread.start()
         
-        # # 9. 시간 동기화 대기 로직 아직은 주석처리. docs를 이용한 테스트를 위함.
-        # current_time = datetime.now()
-        # logger.info(f"🕒 현재 시간: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # # 다음 5분 단위 정각까지 대기
-        # next_sync_minute = ((current_time.minute // 5) + 1) * 5
-        # if next_sync_minute >= 60:
-        #     next_sync_time = current_time.replace(hour=current_time.hour + 1, minute=0, second=0, microsecond=0)
-        # else:
-        #     next_sync_time = current_time.replace(minute=next_sync_minute, second=0, microsecond=0)
-        
-        # wait_seconds = (next_sync_time - current_time).total_seconds()
-        
-        # if wait_seconds > 0 and wait_seconds <= 300:  # 최대 5분만 대기
-        #     logger.info(f"⏳ 다음 동기화 지점까지 대기: {next_sync_time.strftime('%H:%M')} ({wait_seconds:.0f}초)")
-            
-        #     # 대기 중에도 시스템 상태 표시
-        #     def show_startup_progress():
-        #         for i in range(int(wait_seconds), 0, -10):
-        #             if i <= 60:
-        #                 logger.info(f"🕒 동기화 대기 중... {i}초 남음")
-        #             time.sleep(min(10, i))
-            
-        #     progress_thread = threading.Thread(target=show_startup_progress, daemon=True)
-        #     progress_thread.start()
-            
-        #     # 실제 대기
-        #     await asyncio.sleep(wait_seconds)
-        #     logger.info(f"✅ 동기화 지점 도달: {datetime.now().strftime('%H:%M:%S')}")
-        # else:
-        #     logger.info("동기화 대기 시간이 너무 길거나 이미 동기화됨 - 즉시 시작")
-        
-
         # 9. 포지션 모니터링 시스템 시작
         monitor_success = position_monitor.start_monitoring()
         if monitor_success:
@@ -1020,7 +987,14 @@ async def startup_event():
         else:
             logger.warning("⚠️ 포지션 모니터링 시작 실패")
 
-        # 10. 시스템 상태 최종 요약
+        # 10. 스케줄러 자동 시작 (새로 추가)
+        scheduler_success = signal_based_scheduler.start_scheduler()
+        if scheduler_success:
+            logger.info("⏰ 시그널 기반 스케줄러 자동 시작 완료")
+        else:
+            logger.warning("⚠️ 스케줄러 자동 시작 실패 - 수동으로 시작하세요")
+
+        # 11. 시스템 상태 최종 요약
         logger.info("🚀 === 시스템 초기화 완료 ===")
         logger.info(f"📊 개별 분석 에이전트: {'✅' if ai_system.is_available() else '❌'}")
         logger.info(f"🤖 총괄 에이전트: {'✅' if master_agent.is_available() else '❌'}")
@@ -1028,12 +1002,15 @@ async def startup_event():
         logger.info(f"📈 시장 데이터 수집: ✅")
         logger.info(f"📝 노션 연동: {'✅' if notion_logger.is_available() else '❌'}")
         logger.info(f"⚙️ 에이전트 관리: {'✅' if notion_config.is_available() else '❌'}")
+        logger.info(f"🔍 포지션 모니터링: {'✅' if monitor_success else '❌'}")
+        logger.info(f"⏰ 자동 스케줄러: {'✅' if scheduler_success else '❌'}")
         logger.info(f"🕒 시간 동기화: ✅")
         logger.info("웹서버 시작 완료 - 시간 동기화 기반 AI 트레이딩 시스템 활성화")
         
     except Exception as e:
         logger.error(f"❌ 시작 시 오류: {e}")
         # 중요한 오류가 발생해도 서버는 계속 실행되도록 함
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

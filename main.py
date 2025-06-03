@@ -460,12 +460,9 @@ class SignalBasedScheduler:
                             
                             # 🔥 여기가 핵심: 총괄 에이전트 호출
                             logger.info(f"🎯 총괄 에이전트 호출: {symbol}")
-                            
+
                             if master_agent.is_available():
-                                master_decision = master_agent.make_trading_decision(
-                                    analysis_result, 
-                                    analysis_result['triggered_signals']
-                                )
+                                master_decision = master_agent.make_trading_decision(analysis_result)
                                 
                                 if master_decision:
                                     analysis_results["master_decisions"] += 1

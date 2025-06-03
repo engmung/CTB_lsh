@@ -15,23 +15,18 @@ except ImportError:
     logger.warning("google-genai 패키지를 찾을 수 없습니다. 총괄 에이전트가 비활성화됩니다.")
 
 # 총괄 에이전트 시스템 프롬프트
-MASTER_AGENT_PROMPT = """당신은 최고의 트레이딩 총괄 관리자입니다.
-개별 분석 에이전트의 결과와 현재 포트폴리오 상태, 시장 상황을 종합하여 최종 매매 결정을 내립니다.
+MASTER_AGENT_PROMPT = """당신은 최고의 코인 단타 트레이딩 총괄 관리자입니다.
+개별 분석 에이전트의 결과와 현재 포트폴리오 상태, 시장 상황을 종합하여 최종 매매 결정을 내립니다. 레버리지는 1에서 10까지 상황에 맞춰 쓰세요.
 
-결정 기준:
-1. 개별 분석의 신뢰도와 추천 방향
-2. 현재 포트폴리오 상태 (포지션 유무, 손익 상황)
-3. 시장 센티먼트 (공포탐욕지수, 변동성)
-4. 리스크 관리 (손절/목표가 달성)
+중요: 개별 분석 추천 해석
+- BUY 추천 = 가격 상승 예상 = LONG 포지션 진입
+- SELL 추천 = 가격 하락 예상 = SHORT 포지션 진입  
+- HOLD 추천 = 현재 상태 유지
 
 매매 결정:
 - ENTER: 새로운 포지션 진입
 - EXIT: 기존 포지션 청산  
 - HOLD: 현재 상태 유지
-
-레버리지 결정 (1x ~ 10x):
-- 높은 신뢰도 + 좋은 시장 상황 = 높은 레버리지
-- 낮은 신뢰도 + 불안한 시장 = 낮은 레버리지
 
 정확한 JSON 형식으로 응답하세요."""
 
@@ -54,7 +49,7 @@ class MasterAgent:
         """총괄 에이전트 사용 가능 여부"""
         return self.available
     
-    def make_trading_decision(self, individual_analysis: Dict, triggered_signals: Dict = None) -> Optional[Dict]:
+    def make_trading_decision(self, individual_analysis: Dict) -> Optional[Dict]:
         """개별 분석 결과를 받아 최종 매매 결정"""
         if not self.available:
             logger.error("총괄 에이전트를 사용할 수 없습니다")
@@ -69,29 +64,26 @@ class MasterAgent:
             # 1. 현재 포트폴리오 상태 확인
             portfolio_status = virtual_portfolio.get_portfolio_status()
             
-            # 2. 시장 센티먼트 확인
-            market_sentiment = market_data_collector.get_market_sentiment(symbol)
-            
-            # 3. 현재가 조회
+            # 2. 현재가 조회
             current_price_data = db.get_current_price(symbol)
             current_price = current_price_data['price'] if current_price_data else 0
             
-            # 4. 기존 포지션 손절/목표가 체크
+            # 3. 기존 포지션 손절/목표가 체크
             position_signal = None
             if portfolio_status['has_position']:
-                position_signal = virtual_portfolio.check_stop_loss_target(current_price)
+                position_signals = virtual_portfolio.check_position_signals(current_price)
+                if position_signals:
+                    position_signal = ', '.join(position_signals)
             
-            # 5. 총괄 분석용 프롬프트 생성
+            # 4. 총괄 분석용 프롬프트 생성
             decision_prompt = self._create_decision_prompt(
                 individual_analysis, 
                 portfolio_status, 
-                market_sentiment, 
                 current_price,
-                position_signal,
-                triggered_signals
+                position_signal
             )
             
-            # 6. AI 매매 결정 수행
+            # 5. AI 매매 결정 수행
             logger.info(f"🧠 총괄 AI 분석 실행...")
             master_decision = self._call_master_ai(decision_prompt)
             
@@ -99,24 +91,22 @@ class MasterAgent:
                 logger.error(f"총괄 AI 분석 실패: {master_decision['error']}")
                 return None
             
-            # 7. 결정 결과에 메타데이터 추가
+            # 6. 결정 결과에 메타데이터 추가
             master_decision.update({
                 'symbol': symbol,
                 'symbol_display': symbol_display,
                 'individual_analysis_id': individual_analysis.get('id'),
                 'current_price': current_price,
                 'portfolio_status': portfolio_status,
-                'market_sentiment': market_sentiment,
                 'position_signal': position_signal,
-                'triggered_signals': triggered_signals,
                 'decision_timestamp': datetime.now().isoformat()
             })
             
-            # 8. 매매 실행
+            # 7. 매매 실행
             execution_result = self._execute_trading_decision(master_decision)
             master_decision['execution_result'] = execution_result
             
-            # 9. 결정 기록 저장
+            # 8. 결정 기록 저장
             db.insert_master_decision(master_decision)
             
             decision_action = master_decision.get('trading_decision', 'HOLD')
@@ -129,68 +119,50 @@ class MasterAgent:
         except Exception as e:
             logger.error(f"총괄 에이전트 매매 결정 중 오류: {e}")
             return None
-    
+
     def _create_decision_prompt(self, individual_analysis: Dict, portfolio_status: Dict, 
-                              market_sentiment: Dict, current_price: float, 
-                              position_signal: str = None, triggered_signals: Dict = None) -> str:
-        """총괄 결정용 프롬프트 생성"""
+                            current_price: float, position_signal: str = None) -> str:
+        """총괄 결정용 프롬프트 생성 - 개별 분석과 포트폴리오 정보만 사용"""
         try:
             symbol = individual_analysis.get('symbol', 'UNKNOWN')
             symbol_display = individual_analysis.get('symbol_display', symbol)
             
             # 개별 분석 정보
             individual_summary = f"""개별 분석 결과:
-- 심볼: {symbol} ({symbol_display})
-- 추천: {individual_analysis.get('recommendation', 'N/A')}
-- 신뢰도: {individual_analysis.get('confidence', 0):.1%}
-- 목표가: ${individual_analysis.get('target_price', 0):.4f}
-- 손절가: ${individual_analysis.get('stop_loss', 0):.4f}
-- 분석 내용: {individual_analysis.get('analysis', 'N/A')[:200]}...
-- 주요 근거: {', '.join(individual_analysis.get('reasons', [])[:3])}"""
-            
-            # 시그널 정보
-            signal_summary = ""
-            if triggered_signals:
-                signal_count = triggered_signals.get('count', 0)
-                signal_types = [s.get('type', 'UNKNOWN') for s in triggered_signals.get('signals', [])]
-                strongest_signal = triggered_signals.get('strongest_signal', {})
-                
-                signal_summary = f"""감지된 시그널:
-- 시그널 개수: {signal_count}개
-- 시그널 타입: {', '.join(signal_types)}
-- 주요 시그널: {strongest_signal.get('description', 'N/A')}
-- 시그널 강도: {strongest_signal.get('strength', 'N/A')}"""
+    - 심볼: {symbol} ({symbol_display})
+    - 추천: {individual_analysis.get('recommendation', 'N/A')}
+    - 신뢰도: {individual_analysis.get('confidence', 0):.1%}
+    - 목표가: ${individual_analysis.get('target_price', 0):.4f}
+    - 손절가: ${individual_analysis.get('stop_loss', 0):.4f}
+    - 분석 내용: {individual_analysis.get('analysis', 'N/A')[:300]}...
+    - 주요 근거: {', '.join(individual_analysis.get('reasons', [])[:5])}"""
             
             # 포트폴리오 상태
             portfolio_summary = f"""현재 포트폴리오:
-- 현재 잔고: ${portfolio_status.get('current_balance', 0):.2f}
-- 총 자산: ${portfolio_status.get('total_value', 0):.2f}
-- 수익률: {portfolio_status.get('total_return', 0):+.2f}%
-- 포지션 유무: {'있음' if portfolio_status.get('has_position') else '없음'}"""
+    - 현재 잔고: ${portfolio_status.get('current_balance', 0):.2f}
+    - 총 자산: ${portfolio_status.get('total_value', 0):.2f}
+    - 수익률: {portfolio_status.get('total_return', 0):+.2f}%
+    - 포지션 유무: {'있음' if portfolio_status.get('has_position') else '없음'}"""
             
             # 기존 포지션 정보 (있는 경우)
             position_info = ""
             if portfolio_status.get('has_position'):
                 pos = portfolio_status.get('current_position', {})
                 position_info = f"""기존 포지션:
-- 심볼: {pos.get('symbol', 'N/A')}
-- 방향: {pos.get('direction', 'N/A')}
-- 진입가: ${pos.get('entry_price', 0):.4f}
-- 레버리지: {pos.get('leverage', 1)}x
-- 미실현 손익: ${portfolio_status.get('unrealized_pnl', 0):+.2f} ({portfolio_status.get('unrealized_pnl_percentage', 0):+.2f}%)
-- 목표가: ${pos.get('target_price', 0):.4f}
-- 손절가: ${pos.get('stop_loss', 0):.4f}"""
+    - 심볼: {pos.get('symbol', 'N/A')}
+    - 방향: {pos.get('direction', 'N/A')}
+    - 진입가: ${pos.get('entry_price', 0):.4f}
+    - 레버리지: {pos.get('leverage', 1)}x
+    - 미실현 손익: ${portfolio_status.get('unrealized_pnl', 0):+.2f} ({portfolio_status.get('unrealized_pnl_percentage', 0):+.2f}%)
+    - 목표가: ${pos.get('target_price', 0):.4f}
+    - 손절가: ${pos.get('stop_loss', 0):.4f}"""
                 
                 if position_signal:
-                    position_info += f"\n- ⚠️ 손절/목표가 신호: {position_signal}"
+                    position_info += f"\n- ⚠️ 포지션 신호: {position_signal}"
             
-            # 시장 센티먼트
-            sentiment_summary = f"""시장 센티먼트:
-- 현재가: ${current_price:.4f}
-- 종합 센티먼트: {market_sentiment.get('combined_sentiment', 50):.1f} ({market_sentiment.get('sentiment_label', 'Neutral')})
-- 공포탐욕지수: {market_sentiment.get('fear_greed_index', {}).get('value', 50)} ({market_sentiment.get('fear_greed_index', {}).get('value_classification', 'Neutral')})
-- 변동성: {market_sentiment.get('volatility_data', {}).get('volatility', 0):.2f}% ({market_sentiment.get('volatility_data', {}).get('classification', 'Medium')})
-- 센티먼트 추천: {market_sentiment.get('recommendation', 'Neutral')}"""
+            # 현재 시장 정보
+            market_info = f"""현재 시장 정보:
+    - 현재가: ${current_price:.4f}"""
             
             # 최종 프롬프트
             prompt_parts = [
@@ -199,36 +171,27 @@ class MasterAgent:
                 "=== 현재 상황 분석 ===",
                 individual_summary,
                 "",
-                signal_summary,
-                "",
                 portfolio_summary,
                 "",
                 position_info,
                 "",
-                sentiment_summary,
+                market_info,
                 "",
                 "=== 결정 요청 ===",
                 "위 정보를 종합하여 다음 JSON 형식으로 매매 결정을 내려주세요:",
                 "",
                 """{
-    "trading_decision": "ENTER|EXIT|HOLD",
-    "confidence": 0.85,
-    "direction": "LONG|SHORT|null",
-    "leverage": 2.5,
-    "target_price": 120.50,
-    "stop_loss": 115.00,
-    "reasoning": "상세한 결정 근거",
-    "risk_assessment": "LOW|MEDIUM|HIGH",
-    "market_timing": "EXCELLENT|GOOD|NEUTRAL|POOR",
-    "expected_return": 8.5
-}""",
-                "",
-                "결정 규칙:",
-                "1. 기존 포지션이 있고 손절/목표가 신호가 있으면 EXIT 우선 고려",
-                "2. 개별 분석 신뢰도가 70% 미만이면 HOLD 또는 낮은 레버리지",
-                "3. 시장 센티먼트가 극단적(20 이하 또는 80 이상)이면 신중한 접근",
-                "4. 변동성이 Very High이면 레버리지 최대 3x로 제한",
-                "5. 포트폴리오 손실이 -10% 이상이면 보수적 접근"
+        "trading_decision": "ENTER|EXIT|HOLD",
+        "confidence": 0.85,
+        "direction": "LONG|SHORT|null",
+        "leverage": 2.5,
+        "target_price": 120.50,
+        "stop_loss": 115.00,
+        "reasoning": "상세한 결정 근거",
+        "risk_assessment": "LOW|MEDIUM|HIGH",
+        "market_timing": "EXCELLENT|GOOD|NEUTRAL|POOR",
+        "expected_return": 8.5
+    }"""
             ]
             
             final_prompt = "\n".join(prompt_parts)

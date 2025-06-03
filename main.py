@@ -8,6 +8,7 @@ import time
 import uvicorn
 import asyncio
 from datetime import datetime, timedelta
+import math
 
 # 프로젝트 모듈 임포트
 from config import DEFAULT_SYMBOL, TIMEFRAMES, SCHEDULER_INTERVAL_MINUTES, get_symbol_display_name, normalize_symbol, logger
@@ -855,6 +856,28 @@ def start_data_collection():
         logger.error(f"데이터 수집 시작 실패: {e}")
         collection_status["errors"].append(str(e))
 
+def safe_float(value):
+    """JSON 안전한 float 값으로 변환"""
+    if value is None:
+        return None
+    try:
+        if math.isnan(value) or math.isinf(value):
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+def sanitize_dict(data):
+    """딕셔너리의 모든 float 값을 JSON 안전하게 변환"""
+    if isinstance(data, dict):
+        return {k: sanitize_dict(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_dict(item) for item in data]
+    elif isinstance(data, float):
+        return safe_float(data)
+    else:
+        return data
+
 
 def stop_data_collection():
     """백그라운드 데이터 수집 중지"""
@@ -1061,13 +1084,12 @@ async def get_status():
         
         current_time = datetime.now()
         
-        return {
+        response_data = {
             "status": "running" if collection_status["running"] else "stopped",
             "mode": "synchronized_signal_based_with_master_agent",
             "system_time": current_time.isoformat(),
             "collection_status": collection_status,
             "scheduler_status": scheduler_status,
-            "position_monitor_status": position_monitor.get_monitor_status(),  # 이 줄 추가
             "sync_info": {
                 "enabled": True,
                 "current_minute": current_time.minute,
@@ -1085,6 +1107,10 @@ async def get_status():
             "available_agents": notion_config.get_agent_names() if notion_config.is_available() else [],
             "timestamp": current_time.isoformat()
         }
+        
+        # JSON 안전한 값으로 변환
+        safe_response = sanitize_dict(response_data)
+        return safe_response
 
     except Exception as e:
         logger.error(f"상태 조회 실패: {e}")

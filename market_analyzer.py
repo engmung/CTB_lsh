@@ -1564,7 +1564,7 @@ class MultiTimeframeAnalyzer:
             return None
     
     def create_simple_analysis_prompt(self, multi_data: Dict, agent_strategy: str) -> str:
-        """간소화된 AI 분석용 프롬프트 생성"""
+        """테이블 형태의 간결한 AI 분석용 프롬프트 생성"""
         try:
             if not multi_data or not multi_data.get("timeframe_data"):
                 logger.error("멀티 데이터가 없어서 프롬프트 생성 불가")
@@ -1574,45 +1574,38 @@ class MultiTimeframeAnalyzer:
             symbol = multi_data.get("symbol", "UNKNOWN")
             symbol_display = multi_data.get("symbol_display", symbol)
             timeframes_used = multi_data.get("timeframes_used", [])
-            analysis_periods = multi_data.get("analysis_periods", 50)
             
-            prompt_parts = []
+            if not timeframes_used:
+                logger.error("사용된 시간봉이 없습니다")
+                return ""
             
-            # 헤더
-            prompt_parts.append(f"""분석 대상: {symbol} ({symbol_display})
-    분석 기간: 최근 {analysis_periods}개 캔들
-    전략: {agent_strategy}
-    사용된 시간봉: {', '.join(timeframes_used)}
-
-    멀티 타임프레임 데이터:""")
+            # 첫 번째 시간봉 데이터 사용 (보통 15m)
+            timeframe = timeframes_used[0]
+            timeframe_data = multi_data["timeframe_data"].get(timeframe)
             
-            # 각 시간봉별 데이터 (간단한 배열 형태)
-            for timeframe in timeframes_used:
-                timeframe_data = multi_data["timeframe_data"].get(timeframe)
-                if not timeframe_data:
-                    continue
-                
-                data_arrays = timeframe_data.get("data_arrays", {})
-                current_price = timeframe_data.get("current_price", 0)
-                
-                prompt_parts.append(f"""
-    {timeframe} 시간봉:
-    - 현재가: {current_price:.4f}
-    - 가격 배열: {data_arrays.get('prices', [])}
-    - RSI: {data_arrays.get('rsi', [])}
-    - MACD: {data_arrays.get('macd', [])}
-    - MACD Signal: {data_arrays.get('macd_signal', [])}
-    - MA20: {data_arrays.get('ma_20', [])}
-    - MA50: {data_arrays.get('ma_50', [])}
-    - 볼린저 상단: {data_arrays.get('bb_upper', [])}
-    - 볼린저 하단: {data_arrays.get('bb_lower', [])}
-    - CCI: {data_arrays.get('cci', [])}
-    - 볼륨: {data_arrays.get('volumes', [])}""")
+            if not timeframe_data:
+                logger.error(f"{timeframe} 시간봉 데이터가 없습니다")
+                return ""
             
-            # 분석 지시사항
-            prompt_parts.append(f"""
-    위 {symbol} 데이터를 분석하여 JSON 형식으로 응답하세요:
-    {{
+            # 테이블 데이터 생성
+            table_data = self._create_table_data(timeframe_data, timeframe)
+            
+            if not table_data:
+                logger.error("테이블 데이터 생성 실패")
+                return ""
+            
+            # 프롬프트 구성
+            prompt_parts = [
+                f"분석 대상: {symbol} ({symbol_display})",
+                f"최신 10개 캔들 데이터 ({timeframe}봉):",
+                "",
+                table_data,
+                "",
+                f"전략: {agent_strategy}",
+                "",
+                "위 테이블 데이터를 분석하여 다음 JSON 형식으로 응답하세요:",
+                "",
+                """{
         "recommendation": "BUY|SELL|HOLD",
         "confidence": 0.75,
         "analysis": "상세한 분석 내용",
@@ -1620,19 +1613,119 @@ class MultiTimeframeAnalyzer:
         "target_price": 120.50,
         "stop_loss": 115.00,
         "risk_level": "LOW|MEDIUM|HIGH"
-    }}
-
-    - 각 시간봉의 데이터를 종합적으로 분석하세요
-    - 배열의 마지막 값이 최신 데이터입니다
-    - JSON 형식을 정확히 지켜주세요""")
+    }""",
+                "",
+                "- 테이블의 최신 데이터(마지막 행)가 현재 상황입니다",
+                "- 시간 순서대로 트렌드를 분석하세요",
+                "- JSON 형식을 정확히 지켜주세요"
+            ]
             
             final_prompt = "\n".join(prompt_parts)
-            logger.info(f"{symbol} 간소화된 프롬프트 생성 완료: {len(final_prompt)} 문자")
+            logger.info(f"{symbol} 테이블 형태 프롬프트 생성 완료: {len(final_prompt)} 문자")
             
             return final_prompt
             
         except Exception as e:
-            logger.error(f"프롬프트 데이터 생성 실패: {e}")
+            logger.error(f"테이블 프롬프트 생성 실패: {e}")
+            return ""
+
+    def _create_table_data(self, timeframe_data: Dict, timeframe: str) -> str:
+        """테이블 형태의 데이터 생성"""
+        try:
+            data_arrays = timeframe_data.get("data_arrays", {})
+            
+            # 필요한 데이터 배열들
+            prices = data_arrays.get('prices', [])
+            volumes = data_arrays.get('volumes', [])
+            rsi = data_arrays.get('rsi', [])
+            macd = data_arrays.get('macd', [])
+            macd_signal = data_arrays.get('macd_signal', [])
+            ma_20 = data_arrays.get('ma_20', [])
+            ma_50 = data_arrays.get('ma_50', [])
+            bb_upper = data_arrays.get('bb_upper', [])
+            bb_lower = data_arrays.get('bb_lower', [])
+            cci = data_arrays.get('cci', [])
+            
+            if not prices:
+                logger.error("가격 데이터가 없습니다")
+                return ""
+            
+            # 최신 10개만 선택
+            data_length = min(len(prices), 10)
+            start_idx = max(0, len(prices) - data_length)
+            
+            # 테이블 헤더
+            table_lines = [
+                "시간   | 종가   | 거래량  | RSI | MACD | 신호선 | MA20  | MA50  | BB상단 | BB하단 | CCI"
+            ]
+            
+            # 현재 시간을 기준으로 역순 계산
+            from datetime import datetime, timedelta
+            current_time = datetime.now()
+            
+            # 테이블 데이터 행들
+            for i in range(start_idx, len(prices)):
+                try:
+                    # 시간 계산 (15분 간격으로 역순)
+                    minutes_ago = (len(prices) - 1 - i) * 15
+                    row_time = current_time - timedelta(minutes=minutes_ago)
+                    time_str = row_time.strftime("%H:%M")
+                    
+                    # 각 값들 안전하게 추출
+                    def safe_get(arr, idx, default=0):
+                        try:
+                            if idx < len(arr) and arr[idx] is not None:
+                                return arr[idx]
+                            return default
+                        except:
+                            return default
+                    
+                    def format_volume(vol):
+                        """거래량 포맷팅 (K, M 단위)"""
+                        if vol >= 1000000:
+                            return f"{vol/1000000:.1f}M"
+                        elif vol >= 1000:
+                            return f"{vol/1000:.0f}K"
+                        else:
+                            return f"{vol:.0f}"
+                    
+                    def format_price(price):
+                        """가격 포맷팅 (정수)"""
+                        return f"{price:.0f}" if price else "0"
+                    
+                    def format_indicator(val):
+                        """지표 포맷팅 (소수점 1자리)"""
+                        return f"{val:.1f}" if val is not None else "0.0"
+                    
+                    # 각 열 데이터
+                    close_price = safe_get(prices, i)
+                    volume = safe_get(volumes, i)
+                    rsi_val = safe_get(rsi, i)
+                    macd_val = safe_get(macd, i)
+                    signal_val = safe_get(macd_signal, i)
+                    ma20_val = safe_get(ma_20, i)
+                    ma50_val = safe_get(ma_50, i)
+                    bb_up_val = safe_get(bb_upper, i)
+                    bb_low_val = safe_get(bb_lower, i)
+                    cci_val = safe_get(cci, i)
+                    
+                    # 테이블 행 생성 (고정 폭으로 정렬)
+                    row = f"{time_str:<6} | {format_price(close_price):<6} | {format_volume(volume):<7} | {format_indicator(rsi_val):<3} | {format_indicator(macd_val):<4} | {format_indicator(signal_val):<4} | {format_price(ma20_val):<5} | {format_price(ma50_val):<5} | {format_price(bb_up_val):<6} | {format_price(bb_low_val):<6} | {format_indicator(cci_val):<3}"
+                    
+                    table_lines.append(row)
+                    
+                except Exception as e:
+                    logger.warning(f"테이블 행 생성 실패 (인덱스 {i}): {e}")
+                    continue
+            
+            if len(table_lines) <= 1:  # 헤더만 있는 경우
+                logger.error("테이블 데이터 행이 없습니다")
+                return ""
+            
+            return "\n".join(table_lines)
+            
+        except Exception as e:
+            logger.error(f"테이블 데이터 생성 실패: {e}")
             return ""
 
 

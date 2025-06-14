@@ -76,22 +76,16 @@ class SignalBasedScheduler:
         self.errors = []
         self.signal_detector = None
         
-        # 정각 기준 실행 시간 설정
+        # 15분마다 순차 실행 (5초 → 30초 → 60초 간격)
         self.data_collection_schedule = {
-            '5m': [1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56],  # 5분마다
-            '15m': [1, 16, 31, 46],  # 15분마다
-            '1h': [1]  # 매시 1분
+            '15m': [0, 15, 30, 45]  # 정각 5초 후 (00:00:05, 15:00:05, 30:00:05, 45:00:05)
         }
         
-        # 시그널 체크는 데이터 수집 2분 후 (안전 마진)
         self.signal_check_schedule = {
-            '5m': [3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58],  # 5분마다 + 2분
-            '15m': [3, 18, 33, 48],  # 15분마다 + 2분
-            '1h': [3]  # 매시 3분
+            '15m': [0, 15, 30, 45]  # 정각 30초 후 (00:00:30, 15:00:30, 30:00:30, 45:00:30)
         }
         
-        # 검증은 15분마다
-        self.verification_schedule = [3, 18, 33, 48]
+        self.verification_schedule = [0, 15, 30, 45]  # 정각 60초 후 (00:01:00, 15:01:00, 30:01:00, 45:01:00)
     
     def start_scheduler(self):
         """시간 동기화된 스케줄러 시작"""
@@ -136,8 +130,8 @@ class SignalBasedScheduler:
         })
         
         logger.info(f"🕒 === 시간 동기화 스케줄러 시작 ===")
-        logger.info(f"📊 데이터 수집: 5분({len(self.data_collection_schedule['5m'])}회/시), 15분({len(self.data_collection_schedule['15m'])}회/시), 1시간({len(self.data_collection_schedule['1h'])}회/시)")
-        logger.info(f"🚨 시그널 체크: 5분({len(self.signal_check_schedule['5m'])}회/시), 15분({len(self.signal_check_schedule['15m'])}회/시), 1시간({len(self.signal_check_schedule['1h'])}회/시)")
+        logger.info(f"📊 데이터 수집: 15분({len(self.data_collection_schedule['15m'])}회/시)")
+        logger.info(f"🚨 시그널 체크: 15분({len(self.signal_check_schedule['15m'])}회/시)")
         logger.info(f"🔍 검증: {len(self.verification_schedule)}회/시")
         
         # 다음 실행 시간 표시
@@ -146,29 +140,30 @@ class SignalBasedScheduler:
         return True
     
     def _register_synchronized_schedules(self):
-        """정각 기준 동기화된 스케줄 등록"""
-        logger.info("정각 기준 스케줄 등록 중...")
+        """15분마다 순차 실행 스케줄 등록"""
+        logger.info("15분마다 순차 실행 스케줄 등록 중...")
         
-        # 데이터 수집 스케줄
+        # 1. 데이터 수집 (정각 5초 후)
         for timeframe, minutes in self.data_collection_schedule.items():
             for minute in minutes:
-                schedule.every().hour.at(f":{minute:02d}").do(
+                schedule.every().hour.at(f"{minute:02d}:05").do(
                     self._data_collection_job, timeframe
                 ).tag(f"data_{timeframe}")
         
-        # 시그널 체크 스케줄 (통합)
-        for minute in self.signal_check_schedule['5m']:  # 가장 빈번한 5분 스케줄 사용
-            schedule.every().hour.at(f":{minute:02d}").do(
+        # 2. 시그널 체크 (정각 30초 후) - 데이터 수집 완료 대기
+        for minute in self.signal_check_schedule['15m']:
+            schedule.every().hour.at(f"{minute:02d}:30").do(
                 self._signal_detection_job
             ).tag("signal_check")
         
-        # 검증 스케줄
+        # 3. 검증 (정각 55초 후) - 시그널 분석 완료 대기
         for minute in self.verification_schedule:
-            schedule.every().hour.at(f":{minute:02d}").do(
+            schedule.every().hour.at(f"{minute:02d}:55").do(
                 self._verification_job
             ).tag("verification")
         
-        logger.info(f"총 {len(schedule.get_jobs())}개 정각 기준 작업 등록 완료")
+        logger.info(f"총 {len(schedule.get_jobs())}개 15분 순차 실행 작업 등록 완료")
+        logger.info("실행 순서: 데이터수집(5초) → 시그널분석(30초) → 검증(55초)")
     
     def stop_scheduler(self):
         """스케줄러 중지"""
@@ -327,21 +322,17 @@ class SignalBasedScheduler:
         try:
             current_time = datetime.now()
             
-            # 다음 데이터 수집 시간
-            next_data_5m = self._get_next_execution_time(self.data_collection_schedule['5m'])
+            # 다음 데이터 수집 시간 (15분만)
             next_data_15m = self._get_next_execution_time(self.data_collection_schedule['15m'])
-            next_data_1h = self._get_next_execution_time(self.data_collection_schedule['1h'])
             
             # 다음 시그널 체크 시간
-            next_signal = self._get_next_execution_time(self.signal_check_schedule['5m'])
+            next_signal = self._get_next_execution_time(self.signal_check_schedule['15m'])
             
             # 다음 검증 시간
             next_verification = self._get_next_execution_time(self.verification_schedule)
             
             logger.info(f"⏰ 다음 실행 시간:")
-            logger.info(f"  📊 5분 데이터: {next_data_5m.strftime('%H:%M')}")
             logger.info(f"  📊 15분 데이터: {next_data_15m.strftime('%H:%M')}")
-            logger.info(f"  📊 1시간 데이터: {next_data_1h.strftime('%H:%M')}")
             logger.info(f"  🚨 시그널 체크: {next_signal.strftime('%H:%M')}")
             logger.info(f"  🔍 검증: {next_verification.strftime('%H:%M')}")
             
@@ -780,20 +771,18 @@ class SignalBasedScheduler:
         
         if self.running:
             try:
-                # 다음 실행 시간들 계산
+                # 다음 실행 시간들 계산 (15분만)
                 next_data_times = {
-                    '5m': self._get_next_execution_time(self.data_collection_schedule['5m']).isoformat(),
-                    '15m': self._get_next_execution_time(self.data_collection_schedule['15m']).isoformat(),
-                    '1h': self._get_next_execution_time(self.data_collection_schedule['1h']).isoformat()
+                    '15m': self._get_next_execution_time(self.data_collection_schedule['15m']).isoformat()
                 }
-                next_signal_time = self._get_next_execution_time(self.signal_check_schedule['5m']).isoformat()
+                next_signal_time = self._get_next_execution_time(self.signal_check_schedule['15m']).isoformat()
                 next_verification_time = self._get_next_execution_time(self.verification_schedule).isoformat()
             except:
                 pass
         
         return {
             "running": self.running,
-            "mode": "synchronized_signal_based",
+            "mode": "synchronized_signal_based_15m",
             "data_collection_schedule": self.data_collection_schedule,
             "signal_check_schedule": self.signal_check_schedule,
             "verification_schedule": self.verification_schedule,
